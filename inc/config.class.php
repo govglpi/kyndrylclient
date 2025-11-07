@@ -1,256 +1,588 @@
 <?php
-
-/**
- * -------------------------------------------------------------------------
- * GLPI Kyndryl Client Plugin
- * Copyright (C) 2025 by GLPI Kyndryl Client Plugin Team
- * -------------------------------------------------------------------------
+/*
+   ------------------------------------------------------------------------
+   Plugin GLPI Kyndryl Client
+   Copyright (C) 2025 by PLSS
+   
+   ------------------------------------------------------------------------
+   LICENSE
+   This file is part of Plugin Kyndryl Client project.
+   Plugin Kyndryl Client is private software: you can't redistribute it and/or modify
+   it.
+   ------------------------------------------------------------------------
+   @package   Plugin Kyndryl Client
+   @author    PLSS
+   @co-author
+   @copyright Copyright (c) 2025 Kyndryl Client Plugin Development team
+   @license   Software proprietário
+   @since     2025
+   ------------------------------------------------------------------------
  */
 
 if (!defined('GLPI_ROOT')) {
   die("Sorry. You can't access directly to this file");
 }
 
-use GlpiPlugin\KyndrylClient\Repository\ConfigurationRepository;
-use Glpi\Toolbox\Sanitizer;
-
 /**
- * Configuration Class
+ * Class PluginKyndrylclientConfig
  */
 class PluginKyndrylclientConfig extends CommonDBTM
 {
-  public static $rightname = 'config';
-
-  private static ?self $instance = null;
-  private ConfigurationRepository $repository;
+  public const INCIDENTE = 1;
+  public const REQUISICAO = 2;
+  private static $_instance = null;
 
   /**
-   * Constructor
+   * PluginKyndrylclientConfig constructor.
    */
-  public function __construct()
+  function __construct()
   {
     global $DB;
-
-    parent::__construct();
-    $this->repository = new ConfigurationRepository();
 
     if ($DB->tableExists($this->getTable())) {
       $this->getFromDB(1);
     }
   }
 
-  /**
-   * Get instance (Singleton)
-   *
-   * @return self
-   */
-  public static function getInstance(): self
-  {
-    if (self::$instance === null) {
-      self::$instance = new self();
-    }
-    return self::$instance;
-  }
-
-  /**
-   * Get type name
-   *
-   * @param int $nb Number of items
-   * @return string
-   */
-  public static function getTypeName($nb = 0): string
-  {
-    return __('Kyndryl Client', 'kyndrylclient');
-  }
-
-  /**
-   * Check create right
-   *
-   * @return bool
-   */
-  public static function canCreate(): bool
+  static function canCreate()
   {
     return Session::haveRight('config', UPDATE);
   }
 
-  /**
-   * Check view right
-   *
-   * @return bool
-   */
-  public static function canView(): bool
+  static function canView()
   {
     return Session::haveRight('config', READ);
   }
 
-  /**
-   * Check update right
-   *
-   * @return bool
-   */
-  public static function canUpdate(): bool
+  static function canUpdate()
   {
     return Session::haveRight('config', UPDATE);
   }
-
   /**
-   * Display configuration form
+   * @param int $nb
    *
-   * @return void
+   * @return translated
    */
-  public static function showConfigForm(): void
+  static function getTypeName($nb = 0)
   {
-    $config = self::getInstance();
-    $config->showFormHeader(['colspan' => 4]);
+    return __('Kyndryl Client', 'kyndrylclient');
+  }
 
-    echo "<table class='tab_cadre_fixe'>";
-    echo "<thead>";
-    echo "<tr><th colspan='4'>" . self::getTypeName() . "</th></tr>";
-    echo "</thead>";
-    echo "<tbody>";
-
-    // Base URL
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('API Base URL', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    echo "<input type='text' name='base_url' class='form-control' ";
-    echo "value='" . htmlspecialchars($config->fields['base_url']) . "' ";
-    echo "placeholder='https://api.kyndryl.com/' required>";
-    echo "</td>";
-    echo "</tr>";
-
-    // Login
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('Login', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    echo "<input type='text' name='login' class='form-control' ";
-    echo "value='" . htmlspecialchars($config->fields['login']) . "' required>";
-    echo "</td>";
-    echo "</tr>";
-
-    // Password
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('Password', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    echo "<input type='password' name='pwd' class='form-control' ";
-    echo "value='" . htmlspecialchars($config->fields['pwd']) . "' required>";
-    echo "</td>";
-    echo "</tr>";
-
-    // API User
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('API User (GLPI)', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    User::dropdown([
-      'name' => 'request_user',
-      'value' => $config->fields['request_user'],
-      'right' => 'all',
-    ]);
-    echo "</td>";
-    echo "</tr>";
-
-    // Request Type
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('Request Source', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    RequestType::dropdown([
-      'name' => 'request_type',
-      'value' => $config->fields['request_type'],
-    ]);
-    echo "</td>";
-    echo "</tr>";
-
-    // Group Rule
-    echo "<tr class='tab_bg_1'>";
-    echo "<td>" . __('Group Rule', 'kyndrylclient') . "</td>";
-    echo "<td>";
-    Group::dropdown([
-      'name' => 'group',
-      'value' => $config->fields['group'],
-    ]);
-    echo "</td>";
-    echo "</tr>";
-
-    // Test Connection Button
-    echo "<tr class='tab_bg_1'>";
-    echo "<td colspan='2' class='center'>";
-    echo "<button type='button' class='btn btn-secondary' ";
-    echo "onclick='testKyndrylConnection()'>";
-    echo __('Test Connection', 'kyndrylclient');
-    echo "</button>";
-    echo "</td>";
-    echo "</tr>";
-
-    echo "</tbody>";
-    echo "</table>";
-
-    $config->showFormButtons(['candel' => false]);
+  static function getInstance()
+  {
+    if (!isset(self::$_instance)) {
+      self::$_instance = new self();
+      if (!self::$_instance->getFromDB(1)) {
+        self::$_instance->getEmpty();
+      }
+    }
+    return self::$_instance;
   }
 
   /**
-   * Get tab name for item
+   * @param bool $update
    *
-   * @param CommonGLPI $item Item
-   * @param int $withtemplate Template flag
-   * @return string
+   * @return PluginKyndrylclientConfig
    */
-  public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0): string
+  static function getConfig($update = false)
   {
-    if ($item->getType() === 'Config') {
+    $config = new self();
+
+    if ($update) {
+      $config->getFromDB(1);
+    }
+    return $config;
+  }
+
+  static function showConfigForm()
+  {
+    $config = new self();
+    $config->getFromDB(1);
+
+    $config->showFormHeader(['colspan' => 4]);
+
+    echo "<table class='tab_cadre_fixe'><thead>";
+    echo "<th colspan='4'>" . self::getTypeName() . '</th></thead>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('URL Base da API: ', 'kyndrylclient') . '</td><td>';
+    echo "<input style='width: 100%;' type='text' minlength='1' name='base_url' value=" . $config->fields['base_url'] . '>';
+    echo '</td>';
+    echo '</tr>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('Login: ', 'kyndrylclient') . '</td><td>';
+    echo "<input style='width: 100%;' type='text' minlength='1' name='login' value=" . $config->fields['login'] . '>';
+    echo '</td>';
+    echo '</tr>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('Senha: ', 'kyndrylclient') . '</td><td>';
+    echo "<input style='width: 100%;' type='password' minlength='1' name='pwd' value=" . $config->fields['pwd'] . '>';
+    echo '</td>';
+    echo '</tr>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('Usuário Kyndryl API: ', 'kyndrylclient') . '</td><td>';
+    Dropdown::show('User', ['name' => 'request_user', 'value' => $config->fields['request_user']]);
+    echo '</td>';
+    echo '</tr>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('Origem da Requisição: ', 'kyndrylclient') . '</td><td>';
+    RequestType::dropdown(['name' => 'request_type', 'value' => $config->fields['request_type']]);
+    echo '</td>';
+    echo '</tr>';
+
+    echo "<tr class='tab_bg_1'>";
+    echo '<td>' . __('Grupo Regra: ', 'kyndrylclient') . '</td><td>';
+    Group::dropdown(['name' => 'group', 'value' => $config->fields['group']]);
+    echo '</td>';
+    echo '</tr>';
+
+    $config->showFormButtons(['candel' => false]);
+
+    return false;
+  }
+
+  function getTabNameForItem(CommonGLPI $item, $withtemplate = 0)
+  {
+    if ($item->getType() == 'Config') {
       return PLUGIN_KYNDRYLCLIENT_NAME;
     }
     return '';
   }
 
-  /**
-   * Display tab content for item
-   *
-   * @param CommonGLPI $item Item
-   * @param int $tabnum Tab number
-   * @param int $withtemplate Template flag
-   * @return bool
-   */
-  public static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0): bool
+  static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0)
   {
-    if ($item->getType() === 'Config') {
+    if ($item->getType() == 'Config') {
       self::showConfigForm();
     }
     return true;
   }
 
   /**
-   * Prepare input for update
+   * Return current API Base URL if exists
    *
-   * @param array $input Input data
-   * @return array|false
+   * @return boolean
    */
-  public function prepareInputForUpdate($input)
+  static function getCurrentBaseUrl()
   {
-    // Sanitize inputs
-    if (class_exists('Glpi\Toolbox\Sanitizer')) {
-      $input = Sanitizer::sanitize($input);
+    $config = new self();
+    return $config->fields['base_url'] ?? null;
+  }
+
+  /**
+   * Return auth data if exists
+   *
+   * @return array
+   */
+  static function getAuthData()
+  {
+    $config = new self();
+    return [$config->fields['login'], $config->fields['pwd']] ?? null;
+  }
+
+  static function strip_tags_content(string $string): string
+  {
+    return strip_tags(html_entity_decode($string));
+  }
+
+  static function getSummary($status = null): string
+  {
+    if (!$status) {
+      return null;
     }
+    switch ($status) {
+      case 5:
+        return 'Solução providenciada no GLPI';
+        break;
+      case 6:
+        return 'Chamado encerrado no GLPI';
+        break;
 
-    // Validate configuration
-    $errors = $this->repository->validateConfig($input);
+      default:
+        return null;
+        break;
+    }
+  }
 
-    if (!empty($errors)) {
-      foreach ($errors as $field => $error) {
-        Session::addMessageAfterRedirect($error, false, ERROR);
+  static function afterTicketAdd($item)
+  {
+    $config = new self();
+
+    if ($item->fields['requesttypes_id'] == $config->fields['request_type']) {
+      $stringCrop = strtok($item->fields['name'], ' ');
+      $subStrName = substr($stringCrop, 0, 2);
+      if ($subStrName == 'SR' || $subStrName == 'IN') {
+        $requester = new PluginKyndrylclientRequester();
+        $fup = new ITILFollowup();
+        $fup->add([
+          'itemtype' => $item::getType(),
+          'items_id' => $item->getID(),
+          'users_id' => Session::getLoginUserID(),
+          'content' => 'Chamado originado no GLPI Kyndryl - RequesterID: ' . $stringCrop,
+        ]);
+        $requester->add([
+          'requester_id' => $stringCrop,
+          'ticket_id' => $item->getID(),
+        ]);
       }
       return false;
     }
 
-    return $input;
+    $groupsArray = [];
+    $groups = $item->getGroups(CommonITILActor::ASSIGN);
+    $ruleGroups = getSonsOf('glpi_groups', $config->fields['group']);
+
+    foreach ($groups as $key => $group) {
+      array_push($groupsArray, $group['groups_id']);
+    }
+
+    $atribuidos = array_intersect($ruleGroups, $groupsArray);
+
+    if (!empty($atribuidos)) {
+      /** @var \DBmysql $DB */
+      global $DB;
+      $client = new \GuzzleHttp\Client();
+      $documentsIds = [];
+      $documentItemTb = Document_Item::getTable();
+
+      $iteratorDocumentItem = $DB->request([
+        'SELECT' => ['documents_id'],
+        'FROM' => $documentItemTb,
+        'WHERE' => [
+          'itemtype' => 'Ticket',
+          'items_id' => $item->getID(),
+        ],
+      ]);
+
+      foreach ($iteratorDocumentItem as $key => $dId) {
+        array_push($documentsIds, $dId['documents_id']);
+      }
+
+      $in = join(',', $documentsIds);
+      $iteratorDocument = $DB->request([
+        'FROM' => Document::getTable(),
+        'WHERE' => 'id IN (' . $in . ')',
+      ]);
+
+      $attachments = [];
+
+      foreach ($iteratorDocument as $key => $doc) {
+        array_push($attachments, [
+          'AttachmentName' => $doc['filename'],
+          'Attachment' => base64_encode(file_get_contents(GLPI_ROOT . '/files/' . $doc['filepath'])),
+        ]);
+      }
+
+      $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
+      $url = self::getCurrentBaseUrl() . $ticketType . '/create';
+      $data = [
+        'ProviderID' => $item->getID(),
+        'RequesterSeverity' => $item->fields['priority'],
+        'WorkflowStatus' => $item->fields['status'],
+        'Problem' => [
+          'Abstract' => $item->fields['name'],
+          'Description' => self::strip_tags_content($item->fields['content']),
+          'OwnerGroup' => reset($atribuidos),
+        ],
+        'Attachment' => $attachments,
+      ];
+      try {
+        $response = $client->request('POST', $url, [
+          'headers' => [
+            'Content-type' => 'application/json',
+            'Accept' => 'application/json',
+            'Accept-Encoding' => 'gzip, deflate',
+          ],
+          'auth' => [$config->fields['login'], $config->fields['pwd']],
+          'body' => json_encode($data),
+        ]);
+        $body = json_decode($response->getBody());
+        $fup = new ITILFollowup();
+        $requester = new PluginKyndrylclientRequester();
+        $fup->add([
+          'itemtype' => $item::getType(),
+          'items_id' => $item->getID(),
+          'users_id' => Session::getLoginUserID(),
+          'content' => '# Chamado enviado para o GLPI Kyndryl - RequesterID: ' . $body->RequesterID,
+        ]);
+        $requester->add([
+          'requester_id' => $body->RequesterID,
+          'ticket_id' => $item->getID(),
+        ]);
+        Session::addMessageAfterRedirect('Chamado enviado para o GLPI Kyndryl', true, INFO);
+      } catch (Exception $e) {
+        $fup = new ITILFollowup();
+        $fup->add([
+          'itemtype' => $item::getType(),
+          'items_id' => $item->getID(),
+          'users_id' => $config->fields['request_user'],
+          'content' => 'Erro Requisição Kyndryl: ' . $e->getMessage(),
+        ]);
+        Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
+      }
+    }
+    return false;
   }
 
-  /**
-   * Install database table
-   *
-   * @param Migration $migration Migration instance
-   * @return void
-   */
-  public static function install(Migration $migration): void
+  static function getDocument($item)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+    $fupsIds = [];
+    $documentItemTb = Document_Item::getTable();
+
+    $iteratorFups = $DB->request([
+      'SELECT' => ['id'],
+      'FROM' => 'glpi_itilfollowups',
+      'WHERE' => [
+        'itemtype' => 'Ticket',
+        'items_id' => $item->getID(),
+      ],
+    ]);
+
+    foreach ($iteratorFups as $key => $fId) {
+      array_push($fupsIds, $key);
+    }
+    $inFup = join(',', $fupsIds);
+
+    $documentItem = $DB
+      ->request([
+        'SELECT' => ['documents_id'],
+        'FROM' => $documentItemTb,
+        'WHERE' => [
+          'OR' => [
+            [
+              'itemtype' => 'Ticket',
+              'items_id' => $item->getID(),
+            ],
+            [
+              'itemtype' => 'ITILFollowup',
+              'items_id IN (' . $inFup . ')',
+            ],
+          ],
+        ],
+        'ORDER' => 'id DESC',
+        'LIMIT' => 1,
+      ])
+      ->current();
+
+    return $DB
+      ->request([
+        'FROM' => Document::getTable(),
+        'WHERE' => [
+          'id' => $documentItem['documents_id'],
+        ],
+      ])
+      ->current();
+  }
+
+  static function afterTicketUpdate($item)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+
+    $requester = $DB
+      ->request([
+        'FROM' => 'glpi_plugin_kyndrylclient_requesters',
+        'WHERE' => [
+          'ticket_id' => $item->getID(),
+        ],
+        'LIMIT' => 1,
+      ])
+      ->current();
+
+    if (!$requester) {
+      return false;
+    }
+
+    $config = new self();
+
+    if (Session::getLoginUserID() == $config->fields['request_user']) {
+      return false;
+    }
+
+    $groupsArray = [];
+    $groups = $item->getGroups(CommonITILActor::ASSIGN);
+
+    foreach ($groups as $key => $group) {
+      array_push($groupsArray, $group['groups_id']);
+    }
+
+    $client = new \GuzzleHttp\Client();
+
+    $fileDocument = self::getDocument($item);
+
+    $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
+    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requester['requester_id'];
+
+    $lastFollowup = $DB
+      ->request([
+        'FROM' => 'glpi_itilfollowups',
+        'WHERE' => [
+          'itemtype' => 'Ticket',
+          'items_id' => $item->getID(),
+          [
+            'OR' => [
+              'NOT' => [
+                'users_id' => $config->fields['request_user'],
+              ],
+            ],
+          ],
+        ],
+        'ORDER' => 'id DESC',
+        'LIMIT' => 1,
+      ])
+      ->current();
+
+    $data = [
+      'ProviderID' => $item->getID(),
+      'RequesterSeverity' => $item->fields['priority'],
+      'WorkflowStatus' => $item->fields['status'],
+      'Problem' => [
+        'Abstract' => $item->fields['name'],
+        'Description' => self::strip_tags_content($item->fields['content']),
+        'OwnerGroup' => reset($groupsArray),
+      ],
+      'Activity' => [
+        [
+          'Summary' => in_array($item->fields['status'], [5, 6]) ? self::getSummary($item->fields['status']) : 'Worklog originária do GLPI',
+          'ActionLog' => self::strip_tags_content($lastFollowup['content']),
+        ],
+      ],
+      'Solution' => [
+        [
+          'Resolution' => self::strip_tags_content($lastFollowup['content']),
+        ],
+      ],
+      'Attachment' => [
+        'AttachmentName' => $fileDocument['filename'],
+        'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
+      ],
+    ];
+    try {
+      $response = $client->request('PUT', $url, [
+        'headers' => [
+          'Content-type' => 'application/json',
+          'Accept' => 'application/json',
+          'Accept-Encoding' => 'gzip, deflate',
+        ],
+        'auth' => [$config->fields['login'], $config->fields['pwd']],
+        'body' => json_encode($data),
+      ]);
+      //$body = json_decode($response->getBody());
+      $fup = new ITILFollowup();
+      $fup->add([
+        'itemtype' => $item::getType(),
+        'items_id' => $item->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Chamado atualizado no GLPI Kyndryl',
+      ]);
+      Session::addMessageAfterRedirect('Chamado atualizado no GLPI Kyndryl', true, INFO);
+    } catch (Exception $e) {
+      $fup = new ITILFollowup();
+      $fup->add([
+        'itemtype' => $item::getType(),
+        'items_id' => $item->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Erro na requisição: ' . $e->getMessage(),
+      ]);
+      Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
+    }
+
+    return false;
+  }
+
+  static function afterTicketFollowUp($item)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+
+    $config = new self();
+
+    $ticketId = $item->fields['items_id'];
+
+    $requester = $DB
+      ->request([
+        'FROM' => 'glpi_plugin_kyndrylclient_requesters',
+        'WHERE' => [
+          'ticket_id' => $ticketId,
+        ],
+        'LIMIT' => 1,
+      ])
+      ->current();
+
+    if ($item->fields['users_id'] == $config->fields['request_user'] || $item->fields['status'] == 6 || !$requester) {
+      return false;
+    }
+
+    $config = new self();
+    $ticket = Ticket::getById($ticketId);
+    $groupsArray = [];
+    $groups = $ticket->getGroups(CommonITILActor::ASSIGN);
+
+    foreach ($groups as $key => $group) {
+      array_push($groupsArray, $group['groups_id']);
+    }
+
+    $fileDocument = self::getDocument($ticket);
+
+    $client = new \GuzzleHttp\Client();
+
+    $ticketType = $ticket->fields['type'] == self::INCIDENTE ? 'incident' : ($ticket->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
+    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requester['requester_id'];
+    $data = [
+      'ProviderID' => $ticket->getID(),
+      'RequesterSeverity' => $ticket->fields['priority'],
+      'WorkflowStatus' => $ticket->fields['status'],
+      'Problem' => [
+        'OwnerGroup' => reset($groupsArray),
+      ],
+      'Activity' => [
+        [
+          'ActionLog' => self::strip_tags_content($item->fields['content']),
+        ],
+      ],
+      'Attachment' => [
+        'AttachmentName' => $fileDocument['filename'],
+        'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
+      ],
+    ];
+
+    try {
+      $response = $client->request('PUT', $url, [
+        'headers' => [
+          'Content-type' => 'application/json',
+          'Accept' => 'application/json',
+          'Accept-Encoding' => 'gzip, deflate',
+        ],
+        'auth' => [$config->fields['login'], $config->fields['pwd']],
+        'body' => json_encode($data),
+      ]);
+      $fup = new ITILFollowup();
+      $fup->add([
+        'itemtype' => $ticket::getType(),
+        'items_id' => $ticket->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Acompanhamento inserido no GLPI Kyndryl',
+      ]);
+      Session::addMessageAfterRedirect('Acompanhamento inserido no GLPI Kyndryl', true, INFO);
+    } catch (Exception $e) {
+      $fup = new ITILFollowup();
+      $fup->add([
+        'itemtype' => $ticket::getType(),
+        'items_id' => $ticket->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Erro na requisição: ' . $e->getMessage(),
+      ]);
+      Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
+    }
+    return false;
+  }
+
+  static function install(Migration $migration)
   {
     global $DB;
 
@@ -259,55 +591,43 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $default_key_sign = DBConnection::getDefaultPrimaryKeySignOption();
 
     $table = self::getTable();
-
+    $config = new self();
     if (!$DB->tableExists($table)) {
-      $migration->displayMessage("Installing {$table}");
+      $migration->displayMessage("Installing $table");
 
-      $query = "CREATE TABLE IF NOT EXISTS `{$table}` (
-                `id` int {$default_key_sign} NOT NULL AUTO_INCREMENT,
-                `base_url` varchar(255) NOT NULL DEFAULT '',
-                `login` varchar(100) NOT NULL DEFAULT '',
-                `pwd` varchar(255) NOT NULL DEFAULT '',
-                `request_user` int NOT NULL DEFAULT '0',
-                `request_type` int NOT NULL DEFAULT '0',
-                `group` int NOT NULL DEFAULT '0',
-                `date_creation` timestamp NULL DEFAULT NULL,
-                `date_mod` timestamp NULL DEFAULT NULL,
-                PRIMARY KEY (`id`),
-                KEY `request_user` (`request_user`),
-                KEY `request_type` (`request_type`),
-                KEY `group` (`group`)
-            ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC;";
+      $query = "CREATE TABLE IF NOT EXISTS $table (
+        `id` int {$default_key_sign} NOT NULL auto_increment,
+        `group` int NOT NULL default '0',
+        `request_type` int NOT NULL default '0',
+        `request_user` int NOT NULL default '0',
+        `base_url` varchar(255) NOT NULL default '',
+        `login` varchar(50) NOT NULL default '',
+        `pwd` varchar(255) NOT NULL default '',
+        PRIMARY KEY (`id`))
+        ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC
+        AUTO_INCREMENT=1;";
 
       $DB->query($query) or die($DB->error());
-
-      // Insert default config
-      $DB->insert($table, [
+      $config->add([
         'id' => 1,
         'base_url' => 'https://integrationqa.ismbr.kyndryl.com/ISBR_DSP_GLPI_BRIDGE/inb/',
-        'login' => '',
-        'pwd' => '',
-        'request_user' => 0,
-        'request_type' => 0,
-        'group' => 0,
+        'login' => 'dsp-integration',
       ]);
+    } else {
+      $migration->addField($table, 'request_type', 'int', ['after' => 'group']);
+      $migration->addField($table, 'request_user', 'int', ['after' => 'request_type']);
     }
+
+    $migration->executeMigration();
   }
 
-  /**
-   * Uninstall database table
-   *
-   * @param Migration $migration Migration instance
-   * @return void
-   */
-  public static function uninstall(Migration $migration): void
+  static function uninstall(Migration $migration)
   {
     global $DB;
 
     $table = self::getTable();
-
-    if ($DB->tableExists($table)) {
-      $migration->displayMessage("Uninstalling {$table}");
+    if ($DB->TableExists($table)) {
+      $migration->displayMessage("Uninstalling $table");
       $migration->dropTable($table);
     }
   }

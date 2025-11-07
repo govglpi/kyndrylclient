@@ -1,97 +1,89 @@
 <?php
-
-/**
- * -------------------------------------------------------------------------
- * GLPI Kyndryl Client Plugin
- * Copyright (C) 2025 by PLSS
- * -------------------------------------------------------------------------
+/*
+   ------------------------------------------------------------------------
+   Plugin GLPI Kyndryl Client
+   Copyright (C) 2025 by PLSS
+   
+   ------------------------------------------------------------------------
+   LICENSE
+   This file is part of Plugin Kyndryl Client project.
+   Plugin Kyndryl Client is private software: you can't redistribute it and/or modify
+   it.
+   ------------------------------------------------------------------------
+   @package   Plugin Kyndryl Client
+   @author    PLSS
+   @co-author
+   @copyright Copyright (c) 2025 Kyndryl Client Plugin Development team
+   @license   Software proprietário
+   @since     2025
+   ------------------------------------------------------------------------
  */
 
 if (!defined('GLPI_ROOT')) {
   die("Sorry. You can't access directly to this file");
 }
 
+/**
+ * Class PluginKyndrylclientRequester
+ */
 class PluginKyndrylclientRequester extends CommonDBTM
 {
-  public static $rightname = 'config';
-
-  private static ?self $instance = null;
+  private static $_instance = null;
 
   /**
-   * Constructor
+   * PluginKyndrylclientRequester constructor.
    */
-  public function __construct()
+  function __construct()
   {
     global $DB;
-
-    parent::__construct();
 
     if ($DB->tableExists($this->getTable())) {
       $this->getFromDB(1);
     }
   }
 
-  /**
-   * Get instance (Singleton)
-   *
-   * @return self
-   */
-  public static function getInstance(): self
-  {
-    if (self::$instance === null) {
-      self::$instance = new self();
-    }
-    return self::$instance;
-  }
-
-  /**
-   * Get type name
-   *
-   * @param int $nb Number of items
-   * @return string
-   */
-  public static function getTypeName($nb = 0): string
-  {
-    return _n('Kyndryl Requester', 'Kyndryl Requesters', $nb, 'kyndrylclient');
-  }
-
-  /**
-   * Check create right
-   *
-   * @return bool
-   */
-  public static function canCreate(): bool
+  static function canCreate()
   {
     return Session::haveRight('config', UPDATE);
   }
 
-  /**
-   * Check view right
-   *
-   * @return bool
-   */
-  public static function canView(): bool
+  static function canView()
   {
     return Session::haveRight('config', READ);
   }
 
-  /**
-   * Check update right
-   *
-   * @return bool
-   */
-  public static function canUpdate(): bool
+  static function canUpdate()
   {
     return Session::haveRight('config', UPDATE);
   }
 
+  static function getInstance()
+  {
+    if (!isset(self::$_instance)) {
+      self::$_instance = new self();
+      if (!self::$_instance->getFromDB(1)) {
+        self::$_instance->getEmpty();
+      }
+    }
+    return self::$_instance;
+  }
+
   /**
-   * Install database table
+   * @param bool $update
    *
-   * @param Migration $migration Migration instance
-   * @return void
+   * @return PluginKyndrylclientRequester
    */
-  public static function install(Migration $migration): void
+  static function getRequester($update = false)
+  {
+    $requester = new self();
+
+    if ($update) {
+      $requester->getFromDB(1);
+    }
+    return $requester;
+  }
+
+  static function install(Migration $migration)
   {
     global $DB;
 
@@ -100,51 +92,30 @@ class PluginKyndrylclientRequester extends CommonDBTM
     $default_key_sign = DBConnection::getDefaultPrimaryKeySignOption();
 
     $table = self::getTable();
-
     if (!$DB->tableExists($table)) {
-      $migration->displayMessage("Installing {$table}");
+      $migration->displayMessage("Installing $table");
 
-      $query = "CREATE TABLE IF NOT EXISTS `{$table}` (
-                `id` int {$default_key_sign} NOT NULL AUTO_INCREMENT,
-                `requester_id` varchar(50) NOT NULL DEFAULT '',
-                `ticket_id` int NOT NULL DEFAULT '0',
-                `date_creation` timestamp NULL DEFAULT NULL,
-                `date_mod` timestamp NULL DEFAULT NULL,
-                PRIMARY KEY (`id`),
-                UNIQUE KEY `requester_id` (`requester_id`),
-                UNIQUE KEY `ticket_id` (`ticket_id`),
-                KEY `date_creation` (`date_creation`)
-            ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC;";
+      $query = "CREATE TABLE IF NOT EXISTS $table (
+              `id` int {$default_key_sign} NOT NULL auto_increment,
+              `requester_id` varchar(50) NOT NULL default '',
+              `ticket_id` int NOT NULL default '0',
+              PRIMARY KEY (`id`)
+              ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC AUTO_INCREMENT=1;";
 
       $DB->query($query) or die($DB->error());
+    } else {
+      $migration->migrationOneTable($table);
     }
   }
 
-  /**
-   * Uninstall database table
-   *
-   * @param Migration $migration Migration instance
-   * @return void
-   */
-  public static function uninstall(Migration $migration): void
+  static function uninstall(Migration $migration)
   {
     global $DB;
 
     $table = self::getTable();
-
-    if ($DB->tableExists($table)) {
-      $migration->displayMessage("Uninstalling {$table}");
+    if ($DB->TableExists($table)) {
+      $migration->displayMessage("Uninstalling $table");
       $migration->dropTable($table);
     }
-  }
-
-  /**
-   * Get raw name (for compatibility)
-   *
-   * @return string
-   */
-  public function getRawName(): string
-  {
-    return $this->fields['requester_id'] ?? '';
   }
 }

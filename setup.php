@@ -24,7 +24,7 @@ define('PLUGIN_KYNDRYLCLIENT_VERSION', '1.0.0');
 // Minimal GLPI version
 define('PLUGIN_KYNDRYLCLIENT_MIN_GLPI', '10.0.0');
 // Maximum GLPI version
-define('PLUGIN_KYNDRYLCLIENT_MAX_GLPI', '10.0.20');
+define('PLUGIN_KYNDRYLCLIENT_MAX_GLPI', '12.0.0');
 
 define('PLUGIN_KYNDRYLCLIENT_NAME', 'Kyndryl Client');
 
@@ -63,6 +63,7 @@ function plugin_init_kyndrylclient()
     $PLUGIN_HOOKS['item_add']['kyndrylclient'] = [
       'Ticket' => 'plugin_kyndrylclient_item_add',
       'ITILFollowup' => 'plugin_kyndrylclient_item_add',
+      'Document' => 'plugin_kyndrylclient_item_add',
     ];
 
     $PLUGIN_HOOKS['item_update']['kyndrylclient'] = [

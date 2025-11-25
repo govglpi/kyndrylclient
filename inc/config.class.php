@@ -33,7 +33,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
   private static $_instance = null;
 
   /**
-   * PluginKyndrylclientConfig constructor.
+   * PluginMaximoclientConfig constructor.
    */
   function __construct()
   {
@@ -207,6 +207,104 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
   }
 
+  static function getUnsendedDocuments($item)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+    $fupsIds = [];
+    $documentsItemsIds = [];
+    $documentsSendedIds = [];
+    $documentsUnsended = [];
+    $documentItemTb = Document_Item::getTable();
+
+    $iteratorFups = $DB->request([
+      'SELECT' => ['id'],
+      'FROM' => 'glpi_itilfollowups',
+      'WHERE' => [
+        'itemtype' => 'Ticket',
+        'items_id' => $item->getID(),
+      ],
+    ]);
+
+    foreach ($iteratorFups as $key => $fId) {
+      array_push($fupsIds, $key);
+    }
+    $inFup = join(',', $fupsIds);
+
+    $documentItems = $DB->request([
+      'SELECT' => ['documents_id'],
+      'FROM' => $documentItemTb,
+      'WHERE' => [
+        'OR' => [
+          [
+            'itemtype' => 'Ticket',
+            'items_id' => $item->getID(),
+          ],
+          [
+            'itemtype' => 'ITILFollowup',
+            'items_id IN (' . $inFup . ')',
+          ],
+        ],
+      ],
+      'ORDER' => 'id DESC',
+    ]);
+
+    foreach ($documentItems as $key => $dId) {
+      array_push($documentsItemsIds, $dId['documents_id']);
+    }
+
+    $documentsOnTicket = array_unique($documentsItemsIds);
+
+    $iteratorSendedDocs = $DB->request([
+      'SELECT' => ['document_id'],
+      'FROM' => 'glpi_plugin_kyndrylclient_documents',
+      'WHERE' => [
+        'ticket_id' => $item->getID(),
+      ],
+    ]);
+
+    foreach ($iteratorSendedDocs as $key => $dId) {
+      array_push($documentsSendedIds, $dId['document_id']);
+    }
+
+    $documentsUnsendedIds = array_diff($documentsOnTicket, $documentsSendedIds);
+
+    $inUnsend = join(',', $documentsUnsendedIds);
+
+    if ($inUnsend !== "") {
+      $documentsUnsendedIterator = $DB->request([
+        'FROM' => Document::getTable(),
+        'WHERE' => ['id IN (' . $inUnsend . ')'],
+      ]);
+
+      foreach ($documentsUnsendedIterator as $key => $doc) {
+        array_push($documentsUnsended, $doc);
+      }
+
+      return $documentsUnsended;
+    } else {
+      return false;
+    }
+  }
+
+  static function sendDocuments(int $ticket_id, array $documentsToSend)
+  {
+    $document = new PluginKyndrylclientDocument();
+    foreach ($documentsToSend as $key => $doc) {
+      $document->add([
+        'document_id' => $doc['id'],
+        'ticket_id' => $ticket_id,
+      ]);
+    }
+  }
+
+  static function afterDocumentAdd($item)
+  {
+    // Não adiciona followup automático para evitar duplicação de logs
+    // O documento será enviado automaticamente no próximo update/followup
+    return false;
+  }
+
   static function afterTicketAdd($item)
   {
     $config = new self();
@@ -220,7 +318,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
         $fup->add([
           'itemtype' => $item::getType(),
           'items_id' => $item->getID(),
-          'users_id' => Session::getLoginUserID(),
+          'users_id' => $config->fields['request_user'],
           'content' => 'Chamado originado no GLPI Kyndryl - RequesterID: ' . $stringCrop,
         ]);
         $requester->add([
@@ -245,35 +343,19 @@ class PluginKyndrylclientConfig extends CommonDBTM
       /** @var \DBmysql $DB */
       global $DB;
       $client = new \GuzzleHttp\Client();
-      $documentsIds = [];
-      $documentItemTb = Document_Item::getTable();
 
-      $iteratorDocumentItem = $DB->request([
-        'SELECT' => ['documents_id'],
-        'FROM' => $documentItemTb,
-        'WHERE' => [
-          'itemtype' => 'Ticket',
-          'items_id' => $item->getID(),
-        ],
-      ]);
+      $unsendedDocuments = self::getUnsendedDocuments($item);
 
-      foreach ($iteratorDocumentItem as $key => $dId) {
-        array_push($documentsIds, $dId['documents_id']);
-      }
+      $attachment = [];
 
-      $in = join(',', $documentsIds);
-      $iteratorDocument = $DB->request([
-        'FROM' => Document::getTable(),
-        'WHERE' => 'id IN (' . $in . ')',
-      ]);
-
-      $attachments = [];
-
-      foreach ($iteratorDocument as $key => $doc) {
-        array_push($attachments, [
-          'AttachmentName' => $doc['filename'],
-          'Attachment' => base64_encode(file_get_contents(GLPI_ROOT . '/files/' . $doc['filepath'])),
-        ]);
+      if ($unsendedDocuments) {
+        foreach ($unsendedDocuments as $key => $fileDocument) {
+          array_push($attachment, [
+            'AttachmentName' => $fileDocument['filename'],
+            'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
+          ]);
+        }
+        self::sendDocuments($item->getID(), $unsendedDocuments);
       }
 
       $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
@@ -284,11 +366,12 @@ class PluginKyndrylclientConfig extends CommonDBTM
         'WorkflowStatus' => $item->fields['status'],
         'Problem' => [
           'Abstract' => $item->fields['name'],
-          'Description' => self::strip_tags_content($item->fields['content']),
+          'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
           'OwnerGroup' => reset($atribuidos),
         ],
-        'Attachment' => $attachments,
+        'Attachment' => $attachment,
       ];
+
       try {
         $response = $client->request('POST', $url, [
           'headers' => [
@@ -305,14 +388,14 @@ class PluginKyndrylclientConfig extends CommonDBTM
         $fup->add([
           'itemtype' => $item::getType(),
           'items_id' => $item->getID(),
-          'users_id' => Session::getLoginUserID(),
-          'content' => '# Chamado enviado para o GLPI Kyndryl - RequesterID: ' . $body->RequesterID,
+          'users_id' => $config->fields['request_user'], //Session::getLoginUserID(),
+          'content' => 'Chamado integrado com o GLPI Kyndryl - RequesterID: ' . $body->RequesterID,
         ]);
         $requester->add([
           'requester_id' => $body->RequesterID,
           'ticket_id' => $item->getID(),
         ]);
-        Session::addMessageAfterRedirect('Chamado enviado para o GLPI Kyndryl', true, INFO);
+        Session::addMessageAfterRedirect('Chamado integrado com o GLPI Kyndryl', true, INFO);
       } catch (Exception $e) {
         $fup = new ITILFollowup();
         $fup->add([
@@ -325,58 +408,6 @@ class PluginKyndrylclientConfig extends CommonDBTM
       }
     }
     return false;
-  }
-
-  static function getDocument($item)
-  {
-    /** @var \DBmysql $DB */
-    global $DB;
-    $fupsIds = [];
-    $documentItemTb = Document_Item::getTable();
-
-    $iteratorFups = $DB->request([
-      'SELECT' => ['id'],
-      'FROM' => 'glpi_itilfollowups',
-      'WHERE' => [
-        'itemtype' => 'Ticket',
-        'items_id' => $item->getID(),
-      ],
-    ]);
-
-    foreach ($iteratorFups as $key => $fId) {
-      array_push($fupsIds, $key);
-    }
-    $inFup = join(',', $fupsIds);
-
-    $documentItem = $DB
-      ->request([
-        'SELECT' => ['documents_id'],
-        'FROM' => $documentItemTb,
-        'WHERE' => [
-          'OR' => [
-            [
-              'itemtype' => 'Ticket',
-              'items_id' => $item->getID(),
-            ],
-            [
-              'itemtype' => 'ITILFollowup',
-              'items_id IN (' . $inFup . ')',
-            ],
-          ],
-        ],
-        'ORDER' => 'id DESC',
-        'LIMIT' => 1,
-      ])
-      ->current();
-
-    return $DB
-      ->request([
-        'FROM' => Document::getTable(),
-        'WHERE' => [
-          'id' => $documentItem['documents_id'],
-        ],
-      ])
-      ->current();
   }
 
   static function afterTicketUpdate($item)
@@ -413,7 +444,19 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
     $client = new \GuzzleHttp\Client();
 
-    $fileDocument = self::getDocument($item);
+    $unsendedDocuments = self::getUnsendedDocuments($item);
+
+    $attachment = [];
+
+    if ($unsendedDocuments) {
+      foreach ($unsendedDocuments as $key => $fileDocument) {
+        array_push($attachment, [
+          'AttachmentName' => $fileDocument['filename'],
+          'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
+        ]);
+      }
+      self::sendDocuments($item->getID(), $unsendedDocuments);
+    }
 
     $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
     $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requester['requester_id'];
@@ -437,31 +480,48 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ])
       ->current();
 
+    $solution = $DB
+      ->request([
+        'FROM' => 'glpi_itilsolutions',
+        'WHERE' => [
+          'itemtype' => 'Ticket',
+          'items_id' => $item->getID(),
+          [
+            'OR' => [
+              'NOT' => [
+                'users_id' => $config->fields['request_user'],
+              ],
+            ],
+          ],
+        ],
+        'ORDER' => 'id DESC',
+        'LIMIT' => 1,
+      ])
+      ->current();
+
     $data = [
       'ProviderID' => $item->getID(),
       'RequesterSeverity' => $item->fields['priority'],
       'WorkflowStatus' => $item->fields['status'],
       'Problem' => [
         'Abstract' => $item->fields['name'],
-        'Description' => self::strip_tags_content($item->fields['content']),
+        'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
         'OwnerGroup' => reset($groupsArray),
       ],
       'Activity' => [
         [
           'Summary' => in_array($item->fields['status'], [5, 6]) ? self::getSummary($item->fields['status']) : 'Worklog originária do GLPI',
-          'ActionLog' => self::strip_tags_content($lastFollowup['content']),
+          'ActionLog' => in_array($item->fields['status'], [5, 6]) ? self::strip_tags_content($solution['content'] ?? "") : self::strip_tags_content($lastFollowup['content'] ?? ""),
         ],
       ],
       'Solution' => [
         [
-          'Resolution' => self::strip_tags_content($lastFollowup['content']),
+          'Resolution' => in_array($item->fields['status'], [5, 6]) ? self::strip_tags_content($solution['content'] ?? "") : self::strip_tags_content($lastFollowup['content'] ?? ""),
         ],
       ],
-      'Attachment' => [
-        'AttachmentName' => $fileDocument['filename'],
-        'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
-      ],
+      'Attachment' => $attachment,
     ];
+
     try {
       $response = $client->request('PUT', $url, [
         'headers' => [
@@ -473,14 +533,8 @@ class PluginKyndrylclientConfig extends CommonDBTM
         'body' => json_encode($data),
       ]);
       //$body = json_decode($response->getBody());
-      $fup = new ITILFollowup();
-      $fup->add([
-        'itemtype' => $item::getType(),
-        'items_id' => $item->getID(),
-        'users_id' => $config->fields['request_user'],
-        'content' => 'Chamado atualizado no GLPI Kyndryl',
-      ]);
-      Session::addMessageAfterRedirect('Chamado atualizado no GLPI Kyndryl', true, INFO);
+      // Não adiciona followup aqui para evitar loop de duplicação
+      Session::addMessageAfterRedirect('Chamado atualizado no IBM Maximo', true, INFO);
     } catch (Exception $e) {
       $fup = new ITILFollowup();
       $fup->add([
@@ -514,7 +568,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ])
       ->current();
 
-    if ($item->fields['users_id'] == $config->fields['request_user'] || $item->fields['status'] == 6 || !$requester) {
+    if ($item->fields['users_id'] == $config->fields['request_user'] || in_array($item->fields['status'], [5, 6]) || !$requester) {
       return false;
     }
 
@@ -527,7 +581,19 @@ class PluginKyndrylclientConfig extends CommonDBTM
       array_push($groupsArray, $group['groups_id']);
     }
 
-    $fileDocument = self::getDocument($ticket);
+    $unsendedDocuments = self::getUnsendedDocuments($ticket);
+
+    $attachment = [];
+
+    if ($unsendedDocuments) {
+      foreach ($unsendedDocuments as $key => $fileDocument) {
+        array_push($attachment, [
+          'AttachmentName' => $fileDocument['filename'],
+          'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
+        ]);
+      }
+      self::sendDocuments($ticket->getID(), $unsendedDocuments);
+    }
 
     $client = new \GuzzleHttp\Client();
 
@@ -542,13 +608,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ],
       'Activity' => [
         [
-          'ActionLog' => self::strip_tags_content($item->fields['content']),
+          'ActionLog' => self::strip_tags_content($item->fields['content'] ?? ""),
         ],
       ],
-      'Attachment' => [
-        'AttachmentName' => $fileDocument['filename'],
-        'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
-      ],
+      'Attachment' => $attachment,
     ];
 
     try {
@@ -561,13 +624,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
         'auth' => [$config->fields['login'], $config->fields['pwd']],
         'body' => json_encode($data),
       ]);
-      $fup = new ITILFollowup();
-      $fup->add([
-        'itemtype' => $ticket::getType(),
-        'items_id' => $ticket->getID(),
-        'users_id' => $config->fields['request_user'],
-        'content' => 'Acompanhamento inserido no GLPI Kyndryl',
-      ]);
+      // Não adiciona followup aqui para evitar loop de duplicação
       Session::addMessageAfterRedirect('Acompanhamento inserido no GLPI Kyndryl', true, INFO);
     } catch (Exception $e) {
       $fup = new ITILFollowup();
@@ -597,12 +654,12 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
       $query = "CREATE TABLE IF NOT EXISTS $table (
         `id` int {$default_key_sign} NOT NULL auto_increment,
-        `group` int NOT NULL default '0',
-        `request_type` int NOT NULL default '0',
-        `request_user` int NOT NULL default '0',
-        `base_url` varchar(255) NOT NULL default '',
-        `login` varchar(50) NOT NULL default '',
-        `pwd` varchar(255) NOT NULL default '',
+        `group` int NOT NULL DEFAULT '0',
+        `request_type` int NOT NULL DEFAULT '0',
+        `request_user` int NOT NULL DEFAULT '0',
+        `base_url` varchar(255) NOT NULL DEFAULT '',
+        `login` varchar(50) NOT NULL DEFAULT '',
+        `pwd` varchar(255) NOT NULL DEFAULT '',
         PRIMARY KEY (`id`))
         ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC
         AUTO_INCREMENT=1;";

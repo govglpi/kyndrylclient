@@ -68,6 +68,10 @@ function plugin_kyndrylclient_item_add($item)
   if ($item::getType() === ITILFollowup::getType()) {
     PluginKyndrylclientConfig::afterTicketFollowUp($item);
   }
+
+  if ($item::getType() === Document::getType()) {
+    PluginKyndrylclientConfig::afterDocumentAdd($item);
+  }
 }
 
 function plugin_kyndrylclient_item_update($item)

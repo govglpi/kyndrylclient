@@ -309,6 +309,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
   {
     $config = new self();
 
+    // Verifica se o chamado veio da Kyndryl para evitar duplicidade
     if ($item->fields['requesttypes_id'] == $config->fields['request_type']) {
       $stringCrop = strtok($item->fields['name'], ' ');
       $subStrName = substr($stringCrop, 0, 2);
@@ -325,8 +326,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
           'requester_id' => $stringCrop,
           'ticket_id' => $item->getID(),
         ]);
+        // Retorna imediatamente para evitar reintegração duplicada
+        return false;
       }
-      return false;
     }
 
     $groupsArray = [];

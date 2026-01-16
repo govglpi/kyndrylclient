@@ -314,7 +314,15 @@ class PluginKyndrylclientConfig extends CommonDBTM
       $stringCrop = strtok($item->fields['name'], ' ');
       $subStrName = substr($stringCrop, 0, 2);
       if ($subStrName == 'SR' || $subStrName == 'IN') {
+        // IMPORTANTE: Salva o requester ANTES de adicionar o followup
+        // para evitar que o hook afterTicketFollowUp tente reenviar para a Kyndryl
         $requester = new PluginKyndrylclientRequester();
+        $requester->add([
+          'requester_id' => $stringCrop,
+          'ticket_id' => $item->getID(),
+        ]);
+        
+        // Agora adiciona o followup informativo
         $fup = new ITILFollowup();
         $fup->add([
           'itemtype' => $item::getType(),
@@ -322,12 +330,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
           'users_id' => $config->fields['request_user'],
           'content' => 'Chamado originado no GLPI Kyndryl - RequesterID: ' . $stringCrop,
         ]);
-        $requester->add([
-          'requester_id' => $stringCrop,
-          'ticket_id' => $item->getID(),
-        ]);
+        
         // Retorna imediatamente para evitar reintegração duplicada
-        return false;
+        return true;
       }
     }
 

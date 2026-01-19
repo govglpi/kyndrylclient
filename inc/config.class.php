@@ -33,7 +33,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
   private static $_instance = null;
 
   /**
-   * PluginMaximoclientConfig constructor.
+   * PluginKyndrylclientConfig constructor.
    */
   function __construct()
   {
@@ -300,8 +300,6 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
   static function afterDocumentAdd($item)
   {
-    // Não adiciona followup automático para evitar duplicação de logs
-    // O documento será enviado automaticamente no próximo update/followup
     return false;
   }
 
@@ -309,20 +307,11 @@ class PluginKyndrylclientConfig extends CommonDBTM
   {
     $config = new self();
 
-    // Verifica se o chamado veio da Kyndryl para evitar duplicidade
     if ($item->fields['requesttypes_id'] == $config->fields['request_type']) {
       $stringCrop = strtok($item->fields['name'], ' ');
       $subStrName = substr($stringCrop, 0, 2);
       if ($subStrName == 'SR' || $subStrName == 'IN') {
-        // IMPORTANTE: Salva o requester ANTES de adicionar o followup
-        // para evitar que o hook afterTicketFollowUp tente reenviar para a Kyndryl
         $requester = new PluginKyndrylclientRequester();
-        $requester->add([
-          'requester_id' => $stringCrop,
-          'ticket_id' => $item->getID(),
-        ]);
-        
-        // Agora adiciona o followup informativo
         $fup = new ITILFollowup();
         $fup->add([
           'itemtype' => $item::getType(),
@@ -330,10 +319,12 @@ class PluginKyndrylclientConfig extends CommonDBTM
           'users_id' => $config->fields['request_user'],
           'content' => 'Chamado originado no GLPI Kyndryl - RequesterID: ' . $stringCrop,
         ]);
-        
-        // Retorna imediatamente para evitar reintegração duplicada
-        return true;
+        $requester->add([
+          'requester_id' => $stringCrop,
+          'ticket_id' => $item->getID(),
+        ]);
       }
+      return false;
     }
 
     $groupsArray = [];
@@ -466,7 +457,6 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
 
     $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
-    // Remove prefixo SR/IN para montagem da URL
     $requesterId = preg_replace('/^(SR|IN)/', '', $requester['requester_id']);
     $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requesterId;
 
@@ -607,9 +597,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $client = new \GuzzleHttp\Client();
 
     $ticketType = $ticket->fields['type'] == self::INCIDENTE ? 'incident' : ($ticket->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
-    // Remove prefixo SR/IN para montagem da URL
-    $requesterId = preg_replace('/^(SR|IN)/', '', $requester['requester_id']);
-    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requesterId;
+    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requester['requester_id'];
     $data = [
       'ProviderID' => $ticket->getID(),
       'RequesterSeverity' => $ticket->fields['priority'],

@@ -498,6 +498,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ])
       ->current();
 
+    // Monta o payload base
     $data = [
       'ProviderID' => $item->getID(),
       'RequesterSeverity' => $item->fields['priority'],
@@ -507,19 +508,42 @@ class PluginKyndrylclientConfig extends CommonDBTM
         'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
         'OwnerGroup' => reset($groupsArray),
       ],
-      'Activity' => [
-        [
-          'Summary' => in_array($item->fields['status'], [5, 6]) ? self::getSummary($item->fields['status']) : 'Worklog originária do GLPI',
-          'ActionLog' => in_array($item->fields['status'], [5, 6]) ? self::strip_tags_content($solution['content'] ?? "") : self::strip_tags_content($lastFollowup['content'] ?? ""),
-        ],
-      ],
-      'Solution' => [
-        [
-          'Resolution' => in_array($item->fields['status'], [5, 6]) ? self::strip_tags_content($solution['content'] ?? "") : self::strip_tags_content($lastFollowup['content'] ?? ""),
-        ],
-      ],
       'Attachment' => $attachment,
     ];
+
+    // Adiciona Activity e Solution conforme o status
+    if (in_array($item->fields['status'], [5, 6])) {
+      // Status 5 = Solucionado, 6 = Fechado
+      $data['Activity'] = [
+        [
+          'Summary' => self::getSummary($item->fields['status']),
+          'ActionLog' => self::strip_tags_content($solution['content'] ?? "Chamado " . ($item->fields['status'] == 5 ? 'solucionado' : 'fechado')),
+        ],
+      ];
+      $data['Solution'] = [
+        [
+          'Resolution' => self::strip_tags_content($solution['content'] ?? ""),
+        ],
+      ];
+    } else {
+      // Para outros status (incluindo reabertura)
+      $actionLog = '';
+      $summary = 'Worklog originária do GLPI';
+      
+      if ($lastFollowup) {
+        $actionLog = self::strip_tags_content($lastFollowup['content']);
+      } else {
+        // Se não há followup, pode ser uma reabertura ou mudança de status
+        $actionLog = 'Chamado atualizado - Status: ' . Ticket::getStatus($item->fields['status']);
+      }
+
+      $data['Activity'] = [
+        [
+          'Summary' => $summary,
+          'ActionLog' => $actionLog,
+        ],
+      ];
+    }
 
     try {
       $response = $client->request('PUT', $url, [

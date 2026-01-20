@@ -597,7 +597,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $client = new \GuzzleHttp\Client();
 
     $ticketType = $ticket->fields['type'] == self::INCIDENTE ? 'incident' : ($ticket->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
-    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requester['requester_id'];
+
+    $requesterId = preg_replace('/^(SR|IN)/', '', $requester['requester_id']);
+    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requesterId;
+    
     $data = [
       'ProviderID' => $ticket->getID(),
       'RequesterSeverity' => $ticket->fields['priority'],

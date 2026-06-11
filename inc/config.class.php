@@ -433,12 +433,25 @@ class PluginKyndrylclientConfig extends CommonDBTM
       return false;
     }
 
+    // Query direta ao banco para ignorar o cache do objeto (que pode ter os grupos antigos)
     $groupsArray = [];
-    $groups = $item->getGroups(CommonITILActor::ASSIGN);
-
-    foreach ($groups as $key => $group) {
-      array_push($groupsArray, $group['groups_id']);
+    $assignedGroupsIterator = $DB->request([
+      'SELECT' => ['groups_id'],
+      'FROM'   => 'glpi_groups_tickets',
+      'WHERE'  => [
+        'tickets_id' => $item->getID(),
+        'type'       => CommonITILActor::ASSIGN,
+      ],
+    ]);
+    foreach ($assignedGroupsIterator as $row) {
+      $groupsArray[] = $row['groups_id'];
     }
+
+    // Aplica o mesmo filtro de afterTicketAdd: só grupos filhos do grupo-regra
+    $ruleGroups = getSonsOf('glpi_groups', $config->fields['group']);
+    $atribuidos = array_intersect($ruleGroups, $groupsArray);
+    // Fallback: se nenhum grupo Kyndryl estiver atribuído, usa o primeiro grupo disponível
+    $ownerGroup = !empty($atribuidos) ? reset($atribuidos) : (!empty($groupsArray) ? reset($groupsArray) : null);
 
     $client = new \GuzzleHttp\Client();
 
@@ -506,7 +519,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
       'Problem' => [
         'Abstract' => $item->fields['name'],
         'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
-        'OwnerGroup' => reset($groupsArray),
+        'OwnerGroup' => $ownerGroup,
       ],
       'Attachment' => $attachment,
     ];

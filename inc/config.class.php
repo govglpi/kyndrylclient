@@ -433,18 +433,31 @@ class PluginKyndrylclientConfig extends CommonDBTM
       return false;
     }
 
-    // Query direta ao banco para ignorar o cache do objeto (que pode ter os grupos antigos)
+    // O hook item_update dispara antes de updateActors() gravar no banco,
+    // então os grupos novos só existem em $item->input['_actors'], não no DB ainda.
     $groupsArray = [];
-    $assignedGroupsIterator = $DB->request([
-      'SELECT' => ['groups_id'],
-      'FROM'   => 'glpi_groups_tickets',
-      'WHERE'  => [
-        'tickets_id' => $item->getID(),
-        'type'       => CommonITILActor::ASSIGN,
-      ],
-    ]);
-    foreach ($assignedGroupsIterator as $row) {
-      $groupsArray[] = $row['groups_id'];
+
+    if (isset($item->input['_actors']['assign'])) {
+      foreach ($item->input['_actors']['assign'] as $actor) {
+        if (isset($actor['itemtype']) && $actor['itemtype'] === 'Group' && isset($actor['items_id'])) {
+          $groupsArray[] = (int) $actor['items_id'];
+        }
+      }
+    }
+
+    // Fallback: quando o input não traz atores (ex.: atualização via API sem mudança de grupo)
+    if (empty($groupsArray)) {
+      $assignedGroupsIterator = $DB->request([
+        'SELECT' => ['groups_id'],
+        'FROM'   => 'glpi_groups_tickets',
+        'WHERE'  => [
+          'tickets_id' => $item->getID(),
+          'type'       => CommonITILActor::ASSIGN,
+        ],
+      ]);
+      foreach ($assignedGroupsIterator as $row) {
+        $groupsArray[] = $row['groups_id'];
+      }
     }
 
     // Aplica o mesmo filtro de afterTicketAdd: só grupos filhos do grupo-regra

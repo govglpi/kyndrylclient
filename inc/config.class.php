@@ -433,30 +433,44 @@ class PluginKyndrylclientConfig extends CommonDBTM
       return false;
     }
 
-    // O hook item_update dispara antes de updateActors() gravar no banco,
-    // então os grupos novos só existem em $item->input['_actors'], não no DB ainda.
+    // Sempre consulta o banco para obter os grupos atuais (estado confiável)
     $groupsArray = [];
-
-    if (isset($item->input['_actors']['assign'])) {
-      foreach ($item->input['_actors']['assign'] as $actor) {
-        if (isset($actor['itemtype']) && $actor['itemtype'] === 'Group' && isset($actor['items_id'])) {
-          $groupsArray[] = (int) $actor['items_id'];
-        }
-      }
+    $assignedGroupsIterator = $DB->request([
+      'SELECT' => ['groups_id'],
+      'FROM'   => 'glpi_groups_tickets',
+      'WHERE'  => [
+        'tickets_id' => $item->getID(),
+        'type'       => CommonITILActor::ASSIGN,
+      ],
+    ]);
+    foreach ($assignedGroupsIterator as $row) {
+      $groupsArray[] = $row['groups_id'];
     }
 
-    // Fallback: quando o input não traz atores (ex.: atualização via API sem mudança de grupo)
-    if (empty($groupsArray)) {
-      $assignedGroupsIterator = $DB->request([
-        'SELECT' => ['groups_id'],
-        'FROM'   => 'glpi_groups_tickets',
-        'WHERE'  => [
-          'tickets_id' => $item->getID(),
-          'type'       => CommonITILActor::ASSIGN,
-        ],
-      ]);
-      foreach ($assignedGroupsIterator as $row) {
-        $groupsArray[] = $row['groups_id'];
+    // Verifica se _actors indica uma mudança explícita de atores (grupos diferentes do banco).
+    // O hook item_update pode disparar antes de updateActors() gravar no banco; nesse caso os
+    // novos grupos só existem em _actors. Porém, em atualizações de followup sem mudança de
+    // grupo, _actors pode trazer dados desatualizados do formulário — por isso só sobrescreve
+    // o banco quando os grupos do input são realmente diferentes dos grupos atuais.
+    if (isset($item->input['_actors']['assign'])) {
+      $inputGroupsArray = [];
+      foreach ($item->input['_actors']['assign'] as $actor) {
+        if (isset($actor['itemtype']) && $actor['itemtype'] === 'Group' && isset($actor['items_id'])) {
+          $inputGroupsArray[] = (int) $actor['items_id'];
+        }
+      }
+
+      if (!empty($inputGroupsArray)) {
+        $sortedInput = $inputGroupsArray;
+        $sortedDb    = $groupsArray;
+        sort($sortedInput);
+        sort($sortedDb);
+
+        if ($sortedInput !== $sortedDb) {
+          // Mudança real de atores: usa o input (banco ainda não foi atualizado por updateActors())
+          $groupsArray = $inputGroupsArray;
+        }
+        // Se os grupos do input forem iguais ao banco, é followup sem mudança de ator — mantém banco
       }
     }
 

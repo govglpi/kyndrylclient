@@ -64,6 +64,7 @@ function plugin_init_kyndrylclient()
       'Ticket' => 'plugin_kyndrylclient_item_add',
       'ITILFollowup' => 'plugin_kyndrylclient_item_add',
       'Document' => 'plugin_kyndrylclient_item_add',
+      'Group_Ticket' => 'plugin_kyndrylclient_item_add',
     ];
 
     $PLUGIN_HOOKS['item_update']['kyndrylclient'] = [

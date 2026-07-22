@@ -32,6 +32,14 @@ class PluginKyndrylclientConfig extends CommonDBTM
   public const REQUISICAO = 2;
   private static $_instance = null;
 
+  // Estado por requisição para coordenar os hooks de Ticket e Group_Ticket:
+  // - $sentTicketsInRequest: evita envio duplicado da mesma atualização
+  // - $creatingTicketsInRequest: evita disparar update durante a criação do chamado
+  // - $ownerGroupOverride: permite que a troca de fila informe explicitamente a fila nova
+  private static $sentTicketsInRequest = [];
+  private static $creatingTicketsInRequest = [];
+  private static $ownerGroupOverride = [];
+
   /**
    * PluginKyndrylclientConfig constructor.
    */
@@ -305,6 +313,11 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
   static function afterTicketAdd($item)
   {
+    // Marca o chamado como "em criação": a atribuição de grupo feita durante o
+    // create não deve disparar um update (afterGroupTicketChange). O envio de
+    // criação é responsabilidade deste método (POST /create).
+    self::$creatingTicketsInRequest[$item->getID()] = true;
+
     $config = new self();
 
     if ($item->fields['requesttypes_id'] == $config->fields['request_type']) {
@@ -413,6 +426,12 @@ class PluginKyndrylclientConfig extends CommonDBTM
     /** @var \DBmysql $DB */
     global $DB;
 
+    // Evita envio duplicado: se a troca de fila (afterGroupTicketChange) já
+    // enviou esta atualização nesta requisição, não reenvia aqui.
+    if (!empty(self::$sentTicketsInRequest[$item->getID()])) {
+      return false;
+    }
+
     $requester = $DB
       ->request([
         'FROM' => 'glpi_plugin_kyndrylclient_requesters',
@@ -479,6 +498,25 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $atribuidos = array_intersect($ruleGroups, $groupsArray);
     // Fallback: se nenhum grupo Kyndryl estiver atribuído, usa o primeiro grupo disponível
     $ownerGroup = !empty($atribuidos) ? reset($atribuidos) : (!empty($groupsArray) ? reset($groupsArray) : null);
+
+    // Se a troca de fila (afterGroupTicketChange) definiu explicitamente a fila
+    // nova, ela tem prioridade sobre a leitura do banco/_actors.
+    if (isset(self::$ownerGroupOverride[$item->getID()])) {
+      $ownerGroup = self::$ownerGroupOverride[$item->getID()];
+    }
+
+    // Marca como enviado nesta requisição (dedup entre os hooks de Ticket e Group_Ticket).
+    self::$sentTicketsInRequest[$item->getID()] = true;
+
+    Toolbox::logInFile(
+      'kyndrylclient',
+      sprintf(
+        "afterTicketUpdate: ticket=%d status=%s ownerGroup=%s\n",
+        $item->getID(),
+        $item->fields['status'] ?? '',
+        $ownerGroup ?? 'null'
+      )
+    );
 
     $client = new \GuzzleHttp\Client();
 
@@ -608,6 +646,85 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ]);
       Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
     }
+
+    return false;
+  }
+
+  /**
+   * Disparado quando um grupo é atribuído a um chamado (glpi_groups_tickets).
+   *
+   * Roda depois que a fila nova já está gravada no banco, então resolve os dois
+   * problemas do fluxo antigo:
+   *  - o item_update do chamado não dispara quando SÓ a fila muda; e
+   *  - a leitura do grupo podia trazer a fila antiga por ordem de gravação.
+   * Usa o grupo recém-atribuído como OwnerGroup (sem ambiguidade de ordenação).
+   */
+  static function afterGroupTicketChange($groupTicket)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+
+    // Só interessa a atribuição (grupo responsável), não requerente/observador.
+    if ((int) ($groupTicket->fields['type'] ?? 0) !== CommonITILActor::ASSIGN) {
+      return false;
+    }
+
+    $ticketId = (int) ($groupTicket->fields['tickets_id'] ?? 0);
+    if (!$ticketId) {
+      return false;
+    }
+
+    // Durante a criação do chamado o envio é feito por afterTicketAdd (POST /create).
+    if (!empty(self::$creatingTicketsInRequest[$ticketId])) {
+      return false;
+    }
+
+    // Já enviado nesta requisição (o item_update do chamado, por exemplo).
+    if (!empty(self::$sentTicketsInRequest[$ticketId])) {
+      return false;
+    }
+
+    $requester = $DB
+      ->request([
+        'FROM' => 'glpi_plugin_kyndrylclient_requesters',
+        'WHERE' => ['ticket_id' => $ticketId],
+        'LIMIT' => 1,
+      ])
+      ->current();
+
+    // Só chamados já integrados com a Kyndryl.
+    if (!$requester) {
+      return false;
+    }
+
+    $config = new self();
+
+    if (Session::getLoginUserID() == $config->fields['request_user']) {
+      return false;
+    }
+
+    // A fila nova é exatamente o grupo recém-atribuído.
+    $ownerGroup = (int) ($groupTicket->fields['groups_id'] ?? 0);
+
+    // Só reporta se for um grupo gerenciado pela Kyndryl (filho do Grupo Regra).
+    $ruleGroups = getSonsOf('glpi_groups', $config->fields['group']);
+    if (!in_array($ownerGroup, $ruleGroups)) {
+      return false;
+    }
+
+    $item = new Ticket();
+    if (!$item->getFromDB($ticketId)) {
+      return false;
+    }
+
+    Toolbox::logInFile(
+      'kyndrylclient',
+      sprintf("afterGroupTicketChange: ticket=%d novaFila(ownerGroup)=%d\n", $ticketId, $ownerGroup)
+    );
+
+    // Informa a fila nova e delega o envio ao fluxo de update (que aplica o override).
+    self::$ownerGroupOverride[$ticketId] = $ownerGroup;
+    self::afterTicketUpdate($item);
 
     return false;
   }

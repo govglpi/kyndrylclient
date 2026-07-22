@@ -68,6 +68,10 @@ function plugin_kyndrylclient_item_add($item)
   if ($item::getType() === Document::getType()) {
     PluginKyndrylclientConfig::afterDocumentAdd($item);
   }
+
+  if ($item::getType() === Group_Ticket::getType()) {
+    PluginKyndrylclientConfig::afterGroupTicketChange($item);
+  }
 }
 
 function plugin_kyndrylclient_item_update($item)

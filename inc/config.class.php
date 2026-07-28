@@ -33,8 +33,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
   private static $_instance = null;
 
   // Estado por requisição para coordenar os hooks de Ticket e Group_Ticket:
-  // - $sentTicketsInRequest: evita envio duplicado da mesma atualização
-  // - $creatingTicketsInRequest: evita disparar update durante a criação do chamado
+  // - $sentTicketsInRequest: guarda a fila (OwnerGroup) enviada no update — permite
+  //   detectar quando o item_update enviou a fila antiga e a troca de fila precisa reenviar
+  // - $creatingTicketsInRequest: evita disparar update por grupos atribuídos após a criação
   // - $ownerGroupOverride: permite que a troca de fila informe explicitamente a fila nova
   private static $sentTicketsInRequest = [];
   private static $creatingTicketsInRequest = [];
@@ -196,7 +197,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
     return strip_tags(html_entity_decode($string));
   }
 
-  static function getSummary($status = null): string
+  static function getSummary($status = null): ?string
   {
     if (!$status) {
       return null;
@@ -234,26 +235,28 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ],
     ]);
 
-    foreach ($iteratorFups as $key => $fId) {
-      array_push($fupsIds, $key);
+    foreach ($iteratorFups as $fId) {
+      array_push($fupsIds, $fId['id']);
     }
-    $inFup = join(',', $fupsIds);
+
+    // Sem followups a cláusula IN ficaria vazia (SQL inválido) — só inclui se houver
+    $orConditions = [
+      [
+        'itemtype' => 'Ticket',
+        'items_id' => $item->getID(),
+      ],
+    ];
+    if (!empty($fupsIds)) {
+      $orConditions[] = [
+        'itemtype' => 'ITILFollowup',
+        'items_id' => $fupsIds,
+      ];
+    }
 
     $documentItems = $DB->request([
       'SELECT' => ['documents_id'],
       'FROM' => $documentItemTb,
-      'WHERE' => [
-        'OR' => [
-          [
-            'itemtype' => 'Ticket',
-            'items_id' => $item->getID(),
-          ],
-          [
-            'itemtype' => 'ITILFollowup',
-            'items_id IN (' . $inFup . ')',
-          ],
-        ],
-      ],
+      'WHERE' => ['OR' => $orConditions],
       'ORDER' => 'id DESC',
     ]);
 
@@ -277,22 +280,20 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
     $documentsUnsendedIds = array_diff($documentsOnTicket, $documentsSendedIds);
 
-    $inUnsend = join(',', $documentsUnsendedIds);
-
-    if ($inUnsend !== "") {
-      $documentsUnsendedIterator = $DB->request([
-        'FROM' => Document::getTable(),
-        'WHERE' => ['id IN (' . $inUnsend . ')'],
-      ]);
-
-      foreach ($documentsUnsendedIterator as $key => $doc) {
-        array_push($documentsUnsended, $doc);
-      }
-
-      return $documentsUnsended;
-    } else {
+    if (empty($documentsUnsendedIds)) {
       return false;
     }
+
+    $documentsUnsendedIterator = $DB->request([
+      'FROM' => Document::getTable(),
+      'WHERE' => ['id' => array_values($documentsUnsendedIds)],
+    ]);
+
+    foreach ($documentsUnsendedIterator as $doc) {
+      array_push($documentsUnsended, $doc);
+    }
+
+    return $documentsUnsended;
   }
 
   static function sendDocuments(int $ticket_id, array $documentsToSend)
@@ -313,9 +314,11 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
   static function afterTicketAdd($item)
   {
-    // Marca o chamado como "em criação": a atribuição de grupo feita durante o
-    // create não deve disparar um update (afterGroupTicketChange). O envio de
-    // criação é responsabilidade deste método (POST /create).
+    // Marca o chamado como "em criação": grupos atribuídos ainda nesta requisição
+    // não devem disparar update. Os grupos do próprio create nem chegam a acionar
+    // afterGroupTicketChange (o hook de Group_Ticket dispara antes deste, quando o
+    // requester ainda não existe); este flag cobre atribuições feitas depois, na
+    // mesma requisição. O envio de criação é responsabilidade deste método (POST /create).
     self::$creatingTicketsInRequest[$item->getID()] = true;
 
     $config = new self();
@@ -426,9 +429,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
     /** @var \DBmysql $DB */
     global $DB;
 
-    // Evita envio duplicado: se a troca de fila (afterGroupTicketChange) já
-    // enviou esta atualização nesta requisição, não reenvia aqui.
-    if (!empty(self::$sentTicketsInRequest[$item->getID()])) {
+    // Evita envio duplicado: se esta atualização já foi enviada nesta requisição
+    // (por este hook ou pela troca de fila), não reenvia aqui.
+    if (array_key_exists($item->getID(), self::$sentTicketsInRequest)) {
       return false;
     }
 
@@ -505,8 +508,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
       $ownerGroup = self::$ownerGroupOverride[$item->getID()];
     }
 
-    // Marca como enviado nesta requisição (dedup entre os hooks de Ticket e Group_Ticket).
-    self::$sentTicketsInRequest[$item->getID()] = true;
+    // Registra a fila enviada nesta requisição: se depois disso a fila mudar
+    // (updateActors roda após este hook), afterGroupTicketChange detecta a
+    // diferença e reenvia com a fila nova.
+    self::$sentTicketsInRequest[$item->getID()] = (int) $ownerGroup;
 
     Toolbox::logInFile(
       'kyndrylclient',
@@ -635,7 +640,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ]);
       //$body = json_decode($response->getBody());
       // Não adiciona followup aqui para evitar loop de duplicação
-      Session::addMessageAfterRedirect('Chamado atualizado no IBM Maximo', true, INFO);
+      Session::addMessageAfterRedirect('Chamado atualizado no Kyndryl', true, INFO);
     } catch (Exception $e) {
       $fup = new ITILFollowup();
       $fup->add([
@@ -679,11 +684,6 @@ class PluginKyndrylclientConfig extends CommonDBTM
       return false;
     }
 
-    // Já enviado nesta requisição (o item_update do chamado, por exemplo).
-    if (!empty(self::$sentTicketsInRequest[$ticketId])) {
-      return false;
-    }
-
     $requester = $DB
       ->request([
         'FROM' => 'glpi_plugin_kyndrylclient_requesters',
@@ -710,6 +710,18 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $ruleGroups = getSonsOf('glpi_groups', $config->fields['group']);
     if (!in_array($ownerGroup, $ruleGroups)) {
       return false;
+    }
+
+    // Dedup sensível à fila: se o update já foi enviado nesta requisição com ESTA
+    // fila, não reenvia. Se foi enviado com fila diferente — o item_update do
+    // chamado dispara antes de updateActors() gravar a fila nova (ex.: regra de
+    // negócio trocando o grupo junto com outros campos) — limpa o flag e reenvia
+    // com a fila correta.
+    if (array_key_exists($ticketId, self::$sentTicketsInRequest)) {
+      if ((int) self::$sentTicketsInRequest[$ticketId] === $ownerGroup) {
+        return false;
+      }
+      unset(self::$sentTicketsInRequest[$ticketId]);
     }
 
     $item = new Ticket();

@@ -55,8 +55,6 @@ function plugin_kyndrylclient_uninstall()
   $migration->executeMigration();
 
   return true;
-
-  global $DB;
 }
 
 function plugin_kyndrylclient_item_add($item)

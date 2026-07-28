@@ -60,16 +60,16 @@ function plugin_init_kyndrylclient()
 
     Plugin::registerClass('PluginKyndrylclientConfig', ['addtabon' => 'Config']);
 
+    // Followups não são tratados diretamente: a adição de um followup atualiza o
+    // chamado-pai (date_mod), o que dispara o item_update de Ticket e envia o worklog.
     $PLUGIN_HOOKS['item_add']['kyndrylclient'] = [
       'Ticket' => 'plugin_kyndrylclient_item_add',
-      'ITILFollowup' => 'plugin_kyndrylclient_item_add',
       'Document' => 'plugin_kyndrylclient_item_add',
       'Group_Ticket' => 'plugin_kyndrylclient_item_add',
     ];
 
     $PLUGIN_HOOKS['item_update']['kyndrylclient'] = [
       'Ticket' => 'plugin_kyndrylclient_item_update',
-      'ITILFollowup' => 'plugin_kyndrylclient_item_update',
     ];
   }
 }

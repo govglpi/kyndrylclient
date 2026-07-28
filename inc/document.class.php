@@ -31,7 +31,7 @@ class PluginKyndrylclientDocument extends CommonDBTM
   private static $_instance = null;
 
   /**
-   * PluginMaximoclientDocument constructor.
+   * PluginKyndrylclientDocument constructor.
    */
   function __construct()
   {

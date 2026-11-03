@@ -20,7 +20,7 @@
  */
 
 //plugin version
-define('PLUGIN_KYNDRYLCLIENT_VERSION', '1.0.0');
+define('PLUGIN_KYNDRYLCLIENT_VERSION', '1.1.0');
 // Minimal GLPI version
 define('PLUGIN_KYNDRYLCLIENT_MIN_GLPI', '10.0.0');
 // Maximum GLPI version
@@ -62,9 +62,12 @@ function plugin_init_kyndrylclient()
 
     // Followups não são tratados diretamente: a adição de um followup atualiza o
     // chamado-pai (date_mod), o que dispara o item_update de Ticket e envia o worklog.
+    $PLUGIN_HOOKS['pre_item_add']['kyndrylclient'] = [
+      'Ticket' => 'plugin_kyndrylclient_pre_item_add',
+    ];
+
     $PLUGIN_HOOKS['item_add']['kyndrylclient'] = [
       'Ticket' => 'plugin_kyndrylclient_item_add',
-      'Document' => 'plugin_kyndrylclient_item_add',
       'Group_Ticket' => 'plugin_kyndrylclient_item_add',
     ];
 

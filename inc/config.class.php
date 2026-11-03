@@ -30,6 +30,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
 {
   public const INCIDENTE = 1;
   public const REQUISICAO = 2;
+  public const HTTP_TIMEOUT = 120;
+  public const HTTP_CONNECT_TIMEOUT = 10;
+  private const PWD_PREFIX = 'enc:';
   private static $_instance = null;
 
   // Estado por requisição para coordenar os hooks de Ticket e Group_Ticket:
@@ -40,6 +43,9 @@ class PluginKyndrylclientConfig extends CommonDBTM
   private static $sentTicketsInRequest = [];
   private static $creatingTicketsInRequest = [];
   private static $ownerGroupOverride = [];
+  // true entre o pre_item_add e o item_add de um Ticket: os Group_Ticket criados
+  // nessa janela pertencem ao chamado em criação (tratado por afterTicketAdd).
+  private static $ticketCreationInProgress = false;
 
   /**
    * PluginKyndrylclientConfig constructor.
@@ -53,17 +59,17 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
   }
 
-  static function canCreate()
+  static function canCreate(): bool
   {
     return Session::haveRight('config', UPDATE);
   }
 
-  static function canView()
+  static function canView(): bool
   {
     return Session::haveRight('config', READ);
   }
 
-  static function canUpdate()
+  static function canUpdate(): bool
   {
     return Session::haveRight('config', UPDATE);
   }
@@ -115,19 +121,19 @@ class PluginKyndrylclientConfig extends CommonDBTM
 
     echo "<tr class='tab_bg_1'>";
     echo '<td>' . __('URL Base da API: ', 'kyndrylclient') . '</td><td>';
-    echo "<input style='width: 100%;' type='text' minlength='1' name='base_url' value=" . $config->fields['base_url'] . '>';
+    echo "<input style='width: 100%;' type='text' minlength='1' name='base_url' value='" . htmlspecialchars((string) $config->fields['base_url'], ENT_QUOTES) . "'>";
     echo '</td>';
     echo '</tr>';
 
     echo "<tr class='tab_bg_1'>";
     echo '<td>' . __('Login: ', 'kyndrylclient') . '</td><td>';
-    echo "<input style='width: 100%;' type='text' minlength='1' name='login' value=" . $config->fields['login'] . '>';
+    echo "<input style='width: 100%;' type='text' minlength='1' name='login' value='" . htmlspecialchars((string) $config->fields['login'], ENT_QUOTES) . "'>";
     echo '</td>';
     echo '</tr>';
 
     echo "<tr class='tab_bg_1'>";
     echo '<td>' . __('Senha: ', 'kyndrylclient') . '</td><td>';
-    echo "<input style='width: 100%;' type='password' minlength='1' name='pwd' value=" . $config->fields['pwd'] . '>';
+    echo "<input style='width: 100%;' type='password' name='pwd' value='' autocomplete='new-password' placeholder='" . __('Deixe em branco para manter a senha atual', 'kyndrylclient') . "'>";
     echo '</td>';
     echo '</tr>';
 
@@ -171,14 +177,39 @@ class PluginKyndrylclientConfig extends CommonDBTM
   }
 
   /**
-   * Return current API Base URL if exists
-   *
-   * @return boolean
+   * Antes de gravar: a senha é criptografada (GLPIKey) e, se vier vazia, a atual é mantida.
    */
-  static function getCurrentBaseUrl()
+  function prepareInputForUpdate($input)
   {
-    $config = new self();
-    return $config->fields['base_url'] ?? null;
+    if (array_key_exists('pwd', $input)) {
+      if ($input['pwd'] === '') {
+        unset($input['pwd']);
+      } else {
+        $input['pwd'] = self::PWD_PREFIX . (new GLPIKey())->encrypt($input['pwd']);
+      }
+    }
+    return $input;
+  }
+
+  /**
+   * Return current API Base URL if exists
+   */
+  static function getCurrentBaseUrl(): ?string
+  {
+    return self::getInstance()->fields['base_url'] ?? null;
+  }
+
+  /**
+   * Senha da API em texto puro. Valores antigos (sem prefixo) são tratados como texto puro.
+   */
+  static function getPassword($config = null): string
+  {
+    $config = $config ?? self::getInstance();
+    $stored = (string) ($config->fields['pwd'] ?? '');
+    if (strpos($stored, self::PWD_PREFIX) === 0) {
+      return (string) (new GLPIKey())->decrypt(substr($stored, strlen(self::PWD_PREFIX)));
+    }
+    return $stored;
   }
 
   /**
@@ -186,10 +217,108 @@ class PluginKyndrylclientConfig extends CommonDBTM
    *
    * @return array
    */
-  static function getAuthData()
+  static function getAuthData(): array
   {
-    $config = new self();
-    return [$config->fields['login'], $config->fields['pwd']] ?? null;
+    $config = self::getInstance();
+    return [$config->fields['login'] ?? '', self::getPassword($config)];
+  }
+
+  static function getTicketType($item): string
+  {
+    return $item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident';
+  }
+
+  /**
+   * Chamada HTTP à Kyndryl com timeout. Lança exceção em erro de rede/HTTP.
+   */
+  static function request(string $method, string $url, array $data, $config = null)
+  {
+    $config = $config ?? new self();
+    $client = new \GuzzleHttp\Client([
+      'timeout' => self::HTTP_TIMEOUT,
+      'connect_timeout' => self::HTTP_CONNECT_TIMEOUT,
+    ]);
+
+    return $client->request($method, $url, [
+      'headers' => [
+        'Content-type' => 'application/json',
+        'Accept' => 'application/json',
+        'Accept-Encoding' => 'gzip, deflate',
+      ],
+      'auth' => [$config->fields['login'], self::getPassword($config)],
+      'body' => json_encode($data),
+    ]);
+  }
+
+  /**
+   * Monta os anexos pendentes. Arquivos ilegíveis são ignorados (e logados) para
+   * não serem marcados como enviados.
+   *
+   * @return array [anexos para o payload, documentos efetivamente incluídos]
+   */
+  static function buildAttachments($item): array
+  {
+    $attachments = [];
+    $included = [];
+
+    $documents = self::getUnsendedDocuments($item);
+    if (!$documents) {
+      return [$attachments, $included];
+    }
+
+    foreach ($documents as $doc) {
+      $path = GLPI_VAR_DIR . '/' . $doc['filepath'];
+      $content = is_readable($path) ? file_get_contents($path) : false;
+      if ($content === false) {
+        Toolbox::logInFile('kyndrylclient', sprintf("Anexo ilegível ignorado: ticket=%d documento=%d path=%s\n", $item->getID(), $doc['id'], $path));
+        continue;
+      }
+      $attachments[] = [
+        'AttachmentName' => $doc['filename'],
+        'Attachment' => base64_encode($content),
+      ];
+      $included[] = $doc;
+    }
+
+    return [$attachments, $included];
+  }
+
+  /**
+   * Última solução do chamado não gerada pelo usuário da integração.
+   */
+  static function getLastSolution($item, $config): ?array
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+    $row = $DB->request([
+      'FROM' => 'glpi_itilsolutions',
+      'WHERE' => [
+        'itemtype' => 'Ticket',
+        'items_id' => $item->getID(),
+        'NOT' => ['users_id' => $config->fields['request_user']],
+      ],
+      'ORDER' => 'id DESC',
+      'LIMIT' => 1,
+    ])->current();
+    return $row ?: null;
+  }
+
+  /**
+   * Payload comum a create e update.
+   */
+  static function buildBasePayload($item, $ownerGroup, array $attachment): array
+  {
+    return [
+      'ProviderID' => $item->getID(),
+      'RequesterSeverity' => $item->fields['priority'],
+      'WorkflowStatus' => $item->fields['status'],
+      'Problem' => [
+        'Abstract' => $item->fields['name'],
+        'Description' => self::strip_tags_content($item->fields['content'] ?? ''),
+        'OwnerGroup' => $ownerGroup === null ? null : (int) $ownerGroup,
+      ],
+      'Attachment' => $attachment,
+    ];
   }
 
   static function strip_tags_content(string $string): string
@@ -307,13 +436,15 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
   }
 
-  static function afterDocumentAdd($item)
+  static function beforeTicketAdd($item)
   {
-    return false;
+    self::$ticketCreationInProgress = true;
   }
 
   static function afterTicketAdd($item)
   {
+    self::$ticketCreationInProgress = false;
+
     // Marca o chamado como "em criação": grupos atribuídos ainda nesta requisição
     // não devem disparar update. Os grupos do próprio create nem chegam a acionar
     // afterGroupTicketChange (o hook de Group_Ticket dispara antes deste, quando o
@@ -354,74 +485,101 @@ class PluginKyndrylclientConfig extends CommonDBTM
     $atribuidos = array_intersect($ruleGroups, $groupsArray);
 
     if (!empty($atribuidos)) {
-      /** @var \DBmysql $DB */
-      global $DB;
-      $client = new \GuzzleHttp\Client();
-
-      $unsendedDocuments = self::getUnsendedDocuments($item);
-
-      $attachment = [];
-
-      if ($unsendedDocuments) {
-        foreach ($unsendedDocuments as $key => $fileDocument) {
-          array_push($attachment, [
-            'AttachmentName' => $fileDocument['filename'],
-            'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
-          ]);
-        }
-        self::sendDocuments($item->getID(), $unsendedDocuments);
-      }
-
-      $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
-      $url = self::getCurrentBaseUrl() . $ticketType . '/create';
-      $data = [
-        'ProviderID' => $item->getID(),
-        'RequesterSeverity' => $item->fields['priority'],
-        'WorkflowStatus' => $item->fields['status'],
-        'Problem' => [
-          'Abstract' => $item->fields['name'],
-          'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
-          'OwnerGroup' => reset($atribuidos),
-        ],
-        'Attachment' => $attachment,
-      ];
-
-      try {
-        $response = $client->request('POST', $url, [
-          'headers' => [
-            'Content-type' => 'application/json',
-            'Accept' => 'application/json',
-            'Accept-Encoding' => 'gzip, deflate',
-          ],
-          'auth' => [$config->fields['login'], $config->fields['pwd']],
-          'body' => json_encode($data),
-        ]);
-        $body = json_decode($response->getBody());
-        $fup = new ITILFollowup();
-        $requester = new PluginKyndrylclientRequester();
-        $fup->add([
-          'itemtype' => $item::getType(),
-          'items_id' => $item->getID(),
-          'users_id' => $config->fields['request_user'], //Session::getLoginUserID(),
-          'content' => 'Chamado integrado com o GLPI Kyndryl - RequesterID: ' . $body->RequesterID,
-        ]);
-        $requester->add([
-          'requester_id' => $body->RequesterID,
-          'ticket_id' => $item->getID(),
-        ]);
-        Session::addMessageAfterRedirect('Chamado integrado com o GLPI Kyndryl', true, INFO);
-      } catch (Exception $e) {
-        $fup = new ITILFollowup();
-        $fup->add([
-          'itemtype' => $item::getType(),
-          'items_id' => $item->getID(),
-          'users_id' => $config->fields['request_user'],
-          'content' => 'Erro Requisição Kyndryl: ' . $e->getMessage(),
-        ]);
-        Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
-      }
+      self::createInKyndryl($item, reset($atribuidos), $config);
     }
     return false;
+  }
+
+  /**
+   * Cria o chamado na Kyndryl (POST /create) e registra o RequesterID retornado.
+   * Usado na criação do chamado e no escalonamento posterior para uma fila Kyndryl.
+   */
+  static function createInKyndryl($item, $ownerGroup, $config = null)
+  {
+    /** @var \DBmysql $DB */
+    global $DB;
+    $config = $config ?? new self();
+
+    // Já integrado: nada a criar.
+    if (PluginKyndrylclientRequester::getByTicket($item->getID())) {
+      return false;
+    }
+
+    [$attachment, $sentDocuments] = self::buildAttachments($item);
+
+    $url = self::getCurrentBaseUrl() . self::getTicketType($item) . '/create';
+    $data = self::buildBasePayload($item, $ownerGroup, $attachment);
+
+    // Histórico anterior ao envio (relevante no escalonamento): followups viram
+    // Activity, em ordem cronológica, ignorando os gerados pelo usuário da integração.
+    $activities = [];
+    $followups = $DB->request([
+      'FROM' => 'glpi_itilfollowups',
+      'WHERE' => [
+        'itemtype' => 'Ticket',
+        'items_id' => $item->getID(),
+        'NOT' => ['users_id' => $config->fields['request_user']],
+      ],
+      'ORDER' => 'id ASC',
+    ]);
+    foreach ($followups as $fup) {
+      $activities[] = [
+        'Summary' => 'Worklog originária do GLPI',
+        'ActionLog' => self::strip_tags_content($fup['content'] ?? ''),
+      ];
+    }
+
+    // Chamado já solucionado/fechado: envia a última solução, como no update.
+    if (in_array($item->fields['status'], [5, 6])) {
+      $solution = self::getLastSolution($item, $config);
+      $activities[] = [
+        'Summary' => self::getSummary($item->fields['status']),
+        'ActionLog' => self::strip_tags_content($solution['content'] ?? 'Chamado ' . ($item->fields['status'] == 5 ? 'solucionado' : 'fechado')),
+      ];
+      $data['Solution'] = [
+        ['Resolution' => self::strip_tags_content($solution['content'] ?? '')],
+      ];
+    }
+
+    if (!empty($activities)) {
+      $data['Activity'] = $activities;
+    }
+
+    try {
+      $response = self::request('POST', $url, $data, $config);
+      $body = json_decode($response->getBody());
+      if (empty($body->RequesterID)) {
+        throw new RuntimeException('Resposta da Kyndryl sem RequesterID: ' . $response->getBody());
+      }
+      // Só marca anexos como enviados após o sucesso da requisição.
+      if ($sentDocuments) {
+        self::sendDocuments($item->getID(), $sentDocuments);
+      }
+      $fup = new ITILFollowup();
+      $requester = new PluginKyndrylclientRequester();
+      $fup->add([
+        'itemtype' => $item::getType(),
+        'items_id' => $item->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Chamado integrado com o GLPI Kyndryl - RequesterID: ' . $body->RequesterID,
+      ]);
+      $requester->add([
+        'requester_id' => $body->RequesterID,
+        'ticket_id' => $item->getID(),
+      ]);
+      Session::addMessageAfterRedirect('Chamado integrado com o GLPI Kyndryl', true, INFO);
+      return true;
+    } catch (Exception $e) {
+      $fup = new ITILFollowup();
+      $fup->add([
+        'itemtype' => $item::getType(),
+        'items_id' => $item->getID(),
+        'users_id' => $config->fields['request_user'],
+        'content' => 'Erro Requisição Kyndryl: ' . $e->getMessage(),
+      ]);
+      Session::addMessageAfterRedirect($e->getMessage(), true, ERROR);
+      return false;
+    }
   }
 
   static function afterTicketUpdate($item)
@@ -435,15 +593,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
       return false;
     }
 
-    $requester = $DB
-      ->request([
-        'FROM' => 'glpi_plugin_kyndrylclient_requesters',
-        'WHERE' => [
-          'ticket_id' => $item->getID(),
-        ],
-        'LIMIT' => 1,
-      ])
-      ->current();
+    $requester = PluginKyndrylclientRequester::getByTicket($item->getID());
 
     if (!$requester) {
       return false;
@@ -523,25 +673,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
       )
     );
 
-    $client = new \GuzzleHttp\Client();
+    [$attachment, $sentDocuments] = self::buildAttachments($item);
 
-    $unsendedDocuments = self::getUnsendedDocuments($item);
-
-    $attachment = [];
-
-    if ($unsendedDocuments) {
-      foreach ($unsendedDocuments as $key => $fileDocument) {
-        array_push($attachment, [
-          'AttachmentName' => $fileDocument['filename'],
-          'Attachment' => base64_encode(file_get_contents(GLPI_VAR_DIR . '/' . $fileDocument['filepath'])),
-        ]);
-      }
-      self::sendDocuments($item->getID(), $unsendedDocuments);
-    }
-
-    $ticketType = $item->fields['type'] == self::INCIDENTE ? 'incident' : ($item->fields['type'] == self::REQUISICAO ? 'sr' : 'incident');
     $requesterId = preg_replace('/^(SR|IN)/', '', $requester['requester_id']);
-    $url = self::getCurrentBaseUrl() . $ticketType . '/' . $requesterId;
+    $url = self::getCurrentBaseUrl() . self::getTicketType($item) . '/' . $requesterId;
 
     $lastFollowup = $DB
       ->request([
@@ -562,37 +697,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
       ])
       ->current();
 
-    $solution = $DB
-      ->request([
-        'FROM' => 'glpi_itilsolutions',
-        'WHERE' => [
-          'itemtype' => 'Ticket',
-          'items_id' => $item->getID(),
-          [
-            'OR' => [
-              'NOT' => [
-                'users_id' => $config->fields['request_user'],
-              ],
-            ],
-          ],
-        ],
-        'ORDER' => 'id DESC',
-        'LIMIT' => 1,
-      ])
-      ->current();
+    $solution = self::getLastSolution($item, $config);
 
     // Monta o payload base
-    $data = [
-      'ProviderID' => $item->getID(),
-      'RequesterSeverity' => $item->fields['priority'],
-      'WorkflowStatus' => $item->fields['status'],
-      'Problem' => [
-        'Abstract' => $item->fields['name'],
-        'Description' => self::strip_tags_content($item->fields['content'] ?? ""),
-        'OwnerGroup' => $ownerGroup,
-      ],
-      'Attachment' => $attachment,
-    ];
+    $data = self::buildBasePayload($item, $ownerGroup, $attachment);
 
     // Adiciona Activity e Solution conforme o status
     if (in_array($item->fields['status'], [5, 6])) {
@@ -629,15 +737,10 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
 
     try {
-      $response = $client->request('PUT', $url, [
-        'headers' => [
-          'Content-type' => 'application/json',
-          'Accept' => 'application/json',
-          'Accept-Encoding' => 'gzip, deflate',
-        ],
-        'auth' => [$config->fields['login'], $config->fields['pwd']],
-        'body' => json_encode($data),
-      ]);
+      self::request('PUT', $url, $data, $config);
+      if ($sentDocuments) {
+        self::sendDocuments($item->getID(), $sentDocuments);
+      }
       //$body = json_decode($response->getBody());
       // Não adiciona followup aqui para evitar loop de duplicação
       Session::addMessageAfterRedirect('Chamado atualizado no Kyndryl', true, INFO);
@@ -680,22 +783,11 @@ class PluginKyndrylclientConfig extends CommonDBTM
     }
 
     // Durante a criação do chamado o envio é feito por afterTicketAdd (POST /create).
-    if (!empty(self::$creatingTicketsInRequest[$ticketId])) {
+    if (self::$ticketCreationInProgress || !empty(self::$creatingTicketsInRequest[$ticketId])) {
       return false;
     }
 
-    $requester = $DB
-      ->request([
-        'FROM' => 'glpi_plugin_kyndrylclient_requesters',
-        'WHERE' => ['ticket_id' => $ticketId],
-        'LIMIT' => 1,
-      ])
-      ->current();
-
-    // Só chamados já integrados com a Kyndryl.
-    if (!$requester) {
-      return false;
-    }
+    $requester = PluginKyndrylclientRequester::getByTicket($ticketId);
 
     $config = new self();
 
@@ -709,6 +801,29 @@ class PluginKyndrylclientConfig extends CommonDBTM
     // Só reporta se for um grupo gerenciado pela Kyndryl (filho do Grupo Regra).
     $ruleGroups = getSonsOf('glpi_groups', $config->fields['group']);
     if (!in_array($ownerGroup, $ruleGroups)) {
+      return false;
+    }
+
+    // Chamado ainda não integrado: escalonamento para um time Kyndryl após a criação
+    // => integra agora (POST /create), exceto chamados originados na própria Kyndryl.
+    if (!$requester) {
+      $ticket = new Ticket();
+      if (!$ticket->getFromDB($ticketId)) {
+        return false;
+      }
+      if ($ticket->fields['requesttypes_id'] == $config->fields['request_type']) {
+        return false;
+      }
+
+      Toolbox::logInFile(
+        'kyndrylclient',
+        sprintf("afterGroupTicketChange: escalonamento ticket=%d fila=%d -> create\n", $ticketId, $ownerGroup)
+      );
+
+      if (self::createInKyndryl($ticket, $ownerGroup, $config)) {
+        // O create já carrega o estado atual: evita PUT redundante nesta requisição.
+        self::$sentTicketsInRequest[$ticketId] = $ownerGroup;
+      }
       return false;
     }
 
@@ -766,7 +881,7 @@ class PluginKyndrylclientConfig extends CommonDBTM
         ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC
         AUTO_INCREMENT=1;";
 
-      $DB->query($query) or die($DB->error());
+      $DB->doQuery($query) or die($DB->error());
       $config->add([
         'id' => 1,
         'base_url' => 'https://integrationqa.ismbr.kyndryl.com/ISBR_DSP_GLPI_BRIDGE/inb/',

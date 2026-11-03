@@ -57,14 +57,17 @@ function plugin_kyndrylclient_uninstall()
   return true;
 }
 
+function plugin_kyndrylclient_pre_item_add($item)
+{
+  if ($item::getType() === Ticket::getType()) {
+    PluginKyndrylclientConfig::beforeTicketAdd($item);
+  }
+}
+
 function plugin_kyndrylclient_item_add($item)
 {
   if ($item::getType() === Ticket::getType()) {
     PluginKyndrylclientConfig::afterTicketAdd($item);
-  }
-
-  if ($item::getType() === Document::getType()) {
-    PluginKyndrylclientConfig::afterDocumentAdd($item);
   }
 
   if ($item::getType() === Group_Ticket::getType()) {

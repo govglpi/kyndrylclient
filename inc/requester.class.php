@@ -28,59 +28,36 @@ if (!defined('GLPI_ROOT')) {
  */
 class PluginKyndrylclientRequester extends CommonDBTM
 {
-  private static $_instance = null;
-
-  /**
-   * PluginKyndrylclientRequester constructor.
-   */
-  function __construct()
-  {
-    global $DB;
-
-    if ($DB->tableExists($this->getTable())) {
-      $this->getFromDB(1);
-    }
-  }
-
-  static function canCreate()
+  static function canCreate(): bool
   {
     return Session::haveRight('config', UPDATE);
   }
 
-  static function canView()
+  static function canView(): bool
   {
     return Session::haveRight('config', READ);
   }
 
-  static function canUpdate()
+  static function canUpdate(): bool
   {
     return Session::haveRight('config', UPDATE);
   }
 
-  static function getInstance()
-  {
-    if (!isset(self::$_instance)) {
-      self::$_instance = new self();
-      if (!self::$_instance->getFromDB(1)) {
-        self::$_instance->getEmpty();
-      }
-    }
-    return self::$_instance;
-  }
-
   /**
-   * @param bool $update
-   *
-   * @return PluginKyndrylclientRequester
+   * Registro de integração (RequesterID Kyndryl) de um chamado, ou null se não integrado.
    */
-  static function getRequester($update = false)
+  static function getByTicket(int $ticketId): ?array
   {
-    $requester = new self();
+    /** @var \DBmysql $DB */
+    global $DB;
 
-    if ($update) {
-      $requester->getFromDB(1);
-    }
-    return $requester;
+    $row = $DB->request([
+      'FROM' => self::getTable(),
+      'WHERE' => ['ticket_id' => $ticketId],
+      'LIMIT' => 1,
+    ])->current();
+
+    return $row ?: null;
   }
 
   static function install(Migration $migration)
@@ -98,13 +75,15 @@ class PluginKyndrylclientRequester extends CommonDBTM
       $query = "CREATE TABLE IF NOT EXISTS $table (
               `id` int {$default_key_sign} NOT NULL auto_increment,
               `requester_id` varchar(50) NOT NULL default '',
-              `ticket_id` int NOT NULL default '0',
-              PRIMARY KEY (`id`)
+              `ticket_id` int {$default_key_sign} NOT NULL default '0',
+              PRIMARY KEY (`id`),
+              KEY `ticket_id` (`ticket_id`)
               ) ENGINE=InnoDB DEFAULT CHARSET={$default_charset} COLLATE={$default_collation} ROW_FORMAT=DYNAMIC AUTO_INCREMENT=1;";
 
-      $DB->query($query) or die($DB->error());
+      $DB->doQuery($query) or die($DB->error());
     } else {
-      $migration->migrationOneTable($table);
+      $migration->addKey($table, 'ticket_id');
+      $migration->executeMigration();
     }
   }
 
